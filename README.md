@@ -2,6 +2,16 @@
 
 用 ColorOS 自带的「小布小布」或长按电源键打开 ChatGPT 普通语音。可在语音就绪后自动返回原应用，让对话留在后台。
 
+## 界面预览
+
+<img src="docs/images/colorgpt-home.png" alt="ColorGPT 首页，显示 Shizuku 监听状态、热词唤醒、长按电源键和自动返回开关" width="320">
+
+- **小布小布唤醒**：把系统识别到的热词转接到 ChatGPT。关闭后恢复原生小布。
+- **长按电源键**：当系统将长按设为唤起小布时，可转接到 ChatGPT 普通语音。
+- **自动返回原应用**：语音就绪后回到原页面。需先在 ChatGPT 开启「后台对话」。
+
+[下载最新 APK](https://github.com/tibbar213/ColorGPT/releases/latest)
+
 ## 开始使用
 
 默认设置为「小布小布唤醒」开启、「长按电源键」开启、「自动返回原应用」关闭。升级后继续使用已保存的开关设置。
