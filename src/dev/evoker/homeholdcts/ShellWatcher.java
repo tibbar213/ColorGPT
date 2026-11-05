@@ -55,7 +55,7 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
     }
     private void watch(DirectLogdReader stream,ExecutorService queue,int token,long since) {
         long wake=-10000,core=-10000;
-        long power=-1,assist=-1,previousAt=-1;
+        long power=-1,assist=-1,previousAt=-1,lastPowerTransfer=-1;
         Task previous=null;
         try {
             while(active(token)) {
@@ -72,12 +72,16 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
                     power=assist=previousAt=-1;
                     previous=null;
                 } else if(uid==1000) {
-                    if(isPowerLongPress(line)) power=stamp;
-                    if(line.startsWith("TaskFragmentExtImpl: ") && line.contains(BOBO_FLOAT)) {
+                    if(isPowerLongPress(line) && (lastPowerTransfer<0 || stamp-lastPowerTransfer>750)) power=stamp;
+                    if(line.startsWith("TaskFragmentExtImpl: shouldSetReadyFalse and resumedActivity: ActivityRecord{")
+                            && line.substring(0, line.indexOf(" prev: ")<0 ? line.length() : line.indexOf(" prev: ")).contains(" u0 "+BOBO_FLOAT+" ")
+                            && line.endsWith("transitionType: 1")) {
                         Matcher match=PREVIOUS.matcher(line);
                         if(match.find()) {
                             previous=new Task(match.group(1),0,match.group(2),Integer.parseInt(match.group(3)));
                             previousAt=stamp;
+                            // TaskFragment records the incoming float task before START is logged.
+                            assist=stamp;
                         }
                     }
                     if(line.startsWith("ActivityTaskManager: START u0 {act=android.intent.action.ASSIST ")
@@ -89,7 +93,7 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
                 if(!hotword && !powerPress) continue;
                 Task powerOrigin=powerPress && previousAt>=0 && Math.abs(previousAt-assist)<=750 ? previous : null;
                 if(hotword) wake=core=-10000;
-                if(powerPress) { power=assist=previousAt=-1; previous=null; }
+                if(powerPress) { lastPowerTransfer=stamp; power=assist=previousAt=-1; previous=null; }
                 matched++;
                 if(busy.compareAndSet(false,true)) {
                     queue.execute(() -> {
@@ -109,18 +113,32 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
     }
     private boolean active(int token) { return running && generation==token && !Thread.currentThread().isInterrupted(); }
     private void transfer(int token,long event,boolean powerPress,Task powerOrigin) {
+        FutureTask<Boolean> voiceEntry = null;
         try {
             if(!active(token) || !(powerPress ? powerEnabled : hotwordEnabled) || SystemClock.elapsedRealtime()-event>3000) return;
-            if(!command("/system/bin/am","get-current-user").trim().equals("0")) { state="跳过：当前不是主用户"; return; }
+            if(!powerPress && !command("/system/bin/am","get-current-user").trim().equals("0")) { state="跳过：当前不是主用户"; return; }
+            if(powerPress) {
+                voiceEntry = new FutureTask<>(ShellWatcher::hasVoiceEntry);
+                new Thread(voiceEntry, "colorgpt-voice-entry-check").start();
+            }
             String policy=command("/system/bin/dumpsys","window","policy");
-            Task origin=returnToOrigin ? captureOrigin(powerOrigin) : null;
+            if(powerPress && !Pattern.compile("(?m)^\\s*mCurrentUserId=0\\s*$").matcher(policy).find()
+                    && !command("/system/bin/am","get-current-user").trim().equals("0")) {
+                state="跳过：当前不是主用户";
+                return;
+            }
+            boolean verifyOriginAfterStop=returnToOrigin && powerPress && powerOrigin!=null;
+            Task origin=returnToOrigin && !verifyOriginAfterStop ? captureOrigin(null) : null;
             if(!policy.contains("mIsShowing=false") || policy.contains("mIsShowing=true")) { state="跳过：手机已锁定或无法确认解锁"; return; }
             if(!active(token) || !(powerPress ? powerEnabled : hotwordEnabled)) return;
-            if(!hasVoiceEntry()) {
+            if(!(voiceEntry==null ? hasVoiceEntry() : voiceEntry.get(9,TimeUnit.SECONDS))) {
                 state="未找到 ChatGPT 语音入口，已保留小布";
                 return;
             }
             if(!active(token) || !(powerPress ? powerEnabled : hotwordEnabled)) return;
+            if(SystemClock.elapsedRealtime()-event>3000) return;
+            if(powerPress) android.util.Log.i("ColorGPT", "Power handoff checks ready in "
+                    +(SystemClock.elapsedRealtime()-event)+" ms after dispatch signal");
             state=powerPress ? "已收到电源键长按，正在关闭小布" : "已收到热词唤醒，正在关闭小布";
             command("/system/bin/am","force-stop","--user","0","com.heytap.speechassist");
             long deadline=SystemClock.elapsedRealtime()+3000;
@@ -130,13 +148,20 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
                 Thread.sleep(80); // Bounded process-exit confirmation; not a voice-start delay.
             }
             if(!active(token)) return;
-            if(origin!=null && !isCurrent(origin)) origin=null;
+            if(powerPress) android.util.Log.i("ColorGPT", "Power handoff stopped Bobo in "
+                    +(SystemClock.elapsedRealtime()-event)+" ms after dispatch signal");
+            if(verifyOriginAfterStop) origin=captureOrigin(null);
+            if(origin!=null && (!isCurrent(origin) || (verifyOriginAfterStop && !origin.equals(powerOrigin)))) origin=null;
             String result=command("/system/bin/am","start","-W","--user","0","-a","android.intent.action.VIEW","-d","https://chat.com/c?mode=voice","-p","com.openai.chatgpt","-f","0x10020000","--es","com.openai.feature.shortcut.impl.ShortcutInitializer.EXTRA_SHORTCUT","launcher_shortcut");
             if(!result.contains("Status: ok")) throw new IllegalStateException("Voice launch not accepted");
             launched++;
             state="监听中；普通语音入口已打开，实际连通请以回答为准";
             if(origin!=null) returnWhenReady(token,origin);
-        } catch(Exception error) { if(active(token)) state="本次转接失败："+error.getClass().getSimpleName()+"（监听仍在）"; }
+        } catch(Exception error) {
+            if(active(token)) state="本次转接失败："+error.getClass().getSimpleName()+"（监听仍在）";
+        } finally {
+            if(voiceEntry!=null) voiceEntry.cancel(true);
+        }
     }
     private static final String BOBO_FLOAT="com.heytap.speechassist/.business.lockscreen.FloatSpeechActivity";
     private static final Pattern PREVIOUS=Pattern.compile(" prev: ActivityRecord\\{(\\S+) u0 (\\S+) t(\\d+)\\}");
