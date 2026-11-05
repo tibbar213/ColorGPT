@@ -1,3 +1,10 @@
+# ColorGPT 0.4.5
+
+- 监听由独立的 Shizuku 服务托管。划掉 ColorGPT 的最近任务卡片后，只要 Shizuku 仍在运行，监听可以继续。
+- 划掉后通知可能消失。要关闭监听，重新打开 ColorGPT，点「停止监听」。
+- 停止或重启 Shizuku 后，需要在 ColorGPT 重新开始监听。
+- 已在一加 Ace 3 / ColorOS 16 / Shizuku Root 模式验证：划掉后长按可进入 ChatGPT 并对答，重新打开点「停止监听」后恢复原生小布。ADB 模式的独立监听尚未实测。
+
 # ColorGPT 0.4.4
 
 - 监听更早的 ColorOS 浮层派发信号，并行检查解锁状态和 ChatGPT 语音入口，缩短长按后关闭小布前的等待。

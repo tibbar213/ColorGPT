@@ -62,7 +62,7 @@ try {
     } elseif (!(Test-Path -LiteralPath $key)) {
         Invoke-Checked (Join-Path $JdkHome 'bin/keytool.exe') @('-genkeypair','-keystore',$key,'-storetype','PKCS12','-storepass','android','-keypass','android','-alias','bridge','-keyalg','RSA','-keysize','3072','-validity','3650','-dname','CN=ColorGPT Bridge Local Test')
     }
-    $apk = Join-Path $OutputDirectory 'ColorGPT-Shizuku-0.4.4.apk'
+    $apk = Join-Path $OutputDirectory 'ColorGPT-Shizuku-0.4.5.apk'
     Invoke-Checked (Join-Path $BuildTools 'apksigner.bat') @('sign','--ks',$key,'--ks-key-alias',$SigningAlias,'--ks-pass',$storePass,'--key-pass',$keyPass,'--v1-signing-enabled','false','--v2-signing-enabled','true','--v3-signing-enabled','true','--v4-signing-enabled','false','--out',$apk,$aligned)
     Invoke-Checked (Join-Path $BuildTools 'apksigner.bat') @('verify','--verbose','--print-certs',$apk)
     Invoke-Checked (Join-Path $BuildTools 'zipalign.exe') @('-c','-p','4',$apk)

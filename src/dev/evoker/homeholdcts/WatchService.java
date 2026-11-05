@@ -25,11 +25,20 @@ public final class WatchService extends Service {
     private boolean hotwordEnabled = true;
     private boolean bound;
     private boolean returnToOrigin;
-    private final Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
+    private static final Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
             new ComponentName("dev.evoker.colorgptshizuku",ShellWatcher.class.getName()))
-            .daemon(false).processNameSuffix("shell_watcher").debuggable(false).version(5);
+            .daemon(true).processNameSuffix("shell_watcher").debuggable(false).version(6);
+    private static final ServiceConnection statusConnection = new ServiceConnection() {
+        @Override public void onServiceConnected(ComponentName name, IBinder binder) {
+            if (binder.pingBinder()) remote = IWakeWatcher.Stub.asInterface(binder);
+        }
+        @Override public void onServiceDisconnected(ComponentName name) {
+            remote = null;
+        }
+    };
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name,IBinder binder) {
+            if(!bound || !binder.pingBinder()) return;
             remote=IWakeWatcher.Stub.asInterface(binder);
             try { latest=remote.startWatching(returnToOrigin,powerEnabled,hotwordEnabled); } catch(Exception error) { latest="连接失败："+error.getClass().getSimpleName(); }
         }
@@ -37,11 +46,40 @@ public final class WatchService extends Service {
     };
     static String readStatus() {
         IWakeWatcher watcher=remote;
-        if(watcher!=null) try { latest=watcher.status(); } catch(Exception ignored) { latest="监听连接不可用。"; }
+        if(watcher!=null && watcher.asBinder().pingBinder()) {
+            try { latest=watcher.status(); } catch(Exception ignored) { latest="监听连接不可用。"; }
+            return latest;
+        }
+        try {
+            if(Shizuku.pingBinder() && Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED
+                    && Shizuku.peekUserService(args,statusConnection)>=0) {
+                return "独立监听正在运行，正在读取状态…";
+            }
+        } catch(Exception ignored) {}
         return latest;
     }
+    static boolean stopListener() {
+        try {
+            IWakeWatcher watcher=remote;
+            if(watcher!=null) {
+                try { watcher.stopWatching(); } catch(Exception ignored) {}
+            }
+            // This also works from a newly opened app with no local service or binder.
+            Shizuku.unbindUserService(args,null,true);
+            remote=null;
+            latest="监听已停止";
+            return true;
+        } catch(Exception error) {
+            latest="未能确认停止。请检查 Shizuku，必要时在 Shizuku 管理器停止服务。";
+            return false;
+        }
+    }
     @Override public int onStartCommand(Intent intent,int flags,int id) {
-        if(intent==null || "STOP".equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
+        if(intent==null) { stopSelf(); return START_NOT_STICKY; }
+        if("STOP".equals(intent.getAction())) {
+            if(stopListener()) stopSelf();
+            return START_NOT_STICKY;
+        }
         try {
             if(!Shizuku.pingBinder() || !ShellWatcher.supportsUid(Shizuku.getUid()) || Shizuku.checkSelfPermission()!=PackageManager.PERMISSION_GRANTED) {
                 latest="拒绝运行：需要已授权的 Shizuku（Root 或 ADB 模式）。"; stopSelf(); return START_NOT_STICKY;
@@ -58,16 +96,22 @@ public final class WatchService extends Service {
             powerEnabled=intent.getBooleanExtra(POWER_ENABLED,DEFAULT_POWER_ENABLED);
             hotwordEnabled=intent.getBooleanExtra(HOTWORD_ENABLED,true);
             if(remote!=null) latest=remote.startWatching(returnToOrigin,powerEnabled,hotwordEnabled);
-            if(!bound) { Shizuku.bindUserService(args,connection); bound=true; latest="等待 Shizuku 监听服务连接…"; }
+            if(!bound) {
+                bound=true;
+                latest="等待 Shizuku 监听服务连接…";
+                Shizuku.bindUserService(args,connection);
+            }
         } catch(Exception error) { latest="启动失败："+error.getClass().getSimpleName(); stopSelf(); }
         return START_NOT_STICKY;
     }
     @Override public void onDestroy() {
-        IWakeWatcher watcher=remote;
-        if(watcher!=null) try { watcher.stopWatching(); } catch(Exception ignored) {}
-        remote=null;
-        if(bound) try { Shizuku.unbindUserService(args,connection,true); } catch(Exception ignored) {}
-        bound=false; latest="监听已停止"; stopForeground(STOP_FOREGROUND_REMOVE); super.onDestroy();
+        boolean wasBound=bound;
+        bound=false;
+        if(wasBound) {
+            try { Shizuku.unbindUserService(args,connection,false); } catch(Exception ignored) {}
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        super.onDestroy();
     }
     @Override public IBinder onBind(Intent intent) { return null; }
 }

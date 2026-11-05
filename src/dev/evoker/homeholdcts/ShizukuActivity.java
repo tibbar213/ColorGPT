@@ -99,8 +99,8 @@ public final class ShizukuActivity extends Activity {
         LinearLayout.LayoutParams stop = new LinearLayout.LayoutParams(0, dp(48), 1);
         stop.leftMargin = dp(8);
         controls.addView(action("停止监听", false, () -> {
-            stopService(new Intent(this, WatchService.class));
-            status.postDelayed(this::refresh, 300);
+            if (WatchService.stopListener()) stopService(new Intent(this, WatchService.class));
+            show(WatchService.latest);
         }), stop);
         add(monitor, controls, 8);
         add(page, monitor, 22);
@@ -112,7 +112,7 @@ public final class ShizukuActivity extends Activity {
         returnToOrigin = setting(options, "自动返回原应用", "语音就绪后返回。请先在 ChatGPT 开启「后台对话」。", WatchService.RETURN_TO_ORIGIN, false);
         add(page, options, 12);
 
-        TextView note = label("通过 Shizuku 监听系统事件。转接会结束小布当前会话，小布界面可能短暂出现。停止监听即可恢复原生小布。", 13, muted, false);
+        TextView note = label("通过 Shizuku 监听系统事件。转接会结束小布当前会话，小布界面可能短暂出现。划掉应用后，Shizuku 可能继续监听。要恢复原生小布，请回到这里点「停止监听」。", 13, muted, false);
         note.setPadding(dp(4), 0, dp(4), 0);
         add(page, note, 16);
         setContentView(scroll);
@@ -122,6 +122,7 @@ public final class ShizukuActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refresh();
+        status.postDelayed(this::refresh, 500);
     }
 
     private int dp(int value) {
