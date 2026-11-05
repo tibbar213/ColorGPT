@@ -21,6 +21,7 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
     private volatile String state="已连接，尚未监听";
     private volatile int generation;
     private volatile int matched, launched;
+    private volatile String lastFailure;
     private DirectLogdReader reader;
     private ExecutorService actions;
     private final AtomicBoolean busy=new AtomicBoolean();
@@ -114,6 +115,7 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
     private boolean active(int token) { return running && generation==token && !Thread.currentThread().isInterrupted(); }
     private void transfer(int token,long event,boolean powerPress,Task powerOrigin) {
         FutureTask<Boolean> voiceEntry = null;
+        String stage = "检查当前用户和解锁状态";
         try {
             if(!active(token) || !(powerPress ? powerEnabled : hotwordEnabled) || SystemClock.elapsedRealtime()-event>3000) return;
             if(!powerPress && !command("/system/bin/am","get-current-user").trim().equals("0")) { state="跳过：当前不是主用户"; return; }
@@ -131,6 +133,7 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
             Task origin=returnToOrigin && !verifyOriginAfterStop ? captureOrigin(null) : null;
             if(!policy.contains("mIsShowing=false") || policy.contains("mIsShowing=true")) { state="跳过：手机已锁定或无法确认解锁"; return; }
             if(!active(token) || !(powerPress ? powerEnabled : hotwordEnabled)) return;
+            stage = "检查 ChatGPT 语音入口";
             if(!(voiceEntry==null ? hasVoiceEntry() : voiceEntry.get(9,TimeUnit.SECONDS))) {
                 state="未找到 ChatGPT 语音入口，已保留小布";
                 return;
@@ -140,29 +143,61 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
             if(powerPress) android.util.Log.i("ColorGPT", "Power handoff checks ready in "
                     +(SystemClock.elapsedRealtime()-event)+" ms after dispatch signal");
             state=powerPress ? "已收到电源键长按，正在关闭小布" : "已收到热词唤醒，正在关闭小布";
+            stage = "关闭小布";
             command("/system/bin/am","force-stop","--user","0","com.heytap.speechassist");
+            stage = "确认小布退出";
             long deadline=SystemClock.elapsedRealtime()+3000;
-            while(!command("/system/bin/pidof","com.heytap.speechassist").trim().isEmpty()) {
+            while(!boboReleased()) {
                 if(!active(token)) return;
-                if(SystemClock.elapsedRealtime()>deadline) throw new IllegalStateException("Bobo is still running");
+                if(SystemClock.elapsedRealtime()>deadline) throw new IllegalStateException("Bobo session is still active");
                 Thread.sleep(80); // Bounded process-exit confirmation; not a voice-start delay.
             }
             if(!active(token)) return;
-            if(powerPress) android.util.Log.i("ColorGPT", "Power handoff stopped Bobo in "
+            if(powerPress) android.util.Log.i("ColorGPT", "Power handoff verified Bobo release in "
                     +(SystemClock.elapsedRealtime()-event)+" ms after dispatch signal");
             if(verifyOriginAfterStop) origin=captureOrigin(null);
             if(origin!=null && (!isCurrent(origin) || (verifyOriginAfterStop && !origin.equals(powerOrigin)))) origin=null;
+            stage = "启动 ChatGPT 普通语音";
             String result=command("/system/bin/am","start","-W","--user","0","-a","android.intent.action.VIEW","-d","https://chat.com/c?mode=voice","-p","com.openai.chatgpt","-f","0x10020000","--es","com.openai.feature.shortcut.impl.ShortcutInitializer.EXTRA_SHORTCUT","launcher_shortcut");
             if(!result.contains("Status: ok")) throw new IllegalStateException("Voice launch not accepted");
             launched++;
             state="监听中；普通语音入口已打开，实际连通请以回答为准";
             if(origin!=null) returnWhenReady(token,origin);
         } catch(Exception error) {
-            if(active(token)) state="本次转接失败："+error.getClass().getSimpleName()+"（监听仍在）";
+            if(active(token)) {
+                lastFailure=stage+"： "+failureReason(error);
+                state="本次转接失败（监听仍在）";
+                android.util.Log.w("ColorGPT", lastFailure);
+            }
         } finally {
             if(voiceEntry!=null) voiceEntry.cancel(true);
         }
     }
+    private static String failureReason(Throwable error) {
+        for(Throwable cause=error; cause!=null; cause=cause.getCause()) {
+            String message=cause.getMessage();
+            if(cause instanceof TimeoutException || "Command timeout".equals(message)) return "操作超时";
+            if("Command rejected".equals(message)) return "系统命令返回失败";
+            if("Bobo session is still active".equals(message)) return "小布界面或录音未及时释放";
+            if("Voice launch not accepted".equals(message)) return "未收到语音入口启动成功确认";
+            if(cause instanceof java.io.IOException) return "无法执行系统命令";
+        }
+        return "操作失败";
+    }
+    private static boolean boboReleased() {
+        if(command("/system/bin/pidof","com.heytap.speechassist").trim().isEmpty()) return true;
+
+        // ColorOS may restart KeepLiveService even after force-stop succeeded.
+        String activityDump=tasks();
+        Task foreground=top(activityDump);
+        if(foreground==null || foreground.component.startsWith("com.heytap.speechassist/")
+                || activityDump.contains(BOBO_FLOAT)) return false;
+
+        String audio=command("/system/bin/dumpsys","audio");
+        return audio.contains("mAudioModeOwner:") && !BOBO_RECORDING.matcher(audio).find();
+    }
+    private static final Pattern BOBO_RECORDING=Pattern.compile(
+            "(?m)^\\s*session:\\d+ -- source client=[^\\r\\n]*-- pack:com\\.heytap\\.speechassist(?:[:\\w.-]*)?\\s+--[^\\r\\n]*silenced:false");
     private static final String BOBO_FLOAT="com.heytap.speechassist/.business.lockscreen.FloatSpeechActivity";
     private static final Pattern PREVIOUS=Pattern.compile(" prev: ActivityRecord\\{(\\S+) u0 (\\S+) t(\\d+)\\}");
     private static final String GPT="com.openai.chatgpt";
@@ -259,7 +294,10 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
         return status();
     }
     @Override public String status() {
-        checkCaller(); return "服务 UID="+Process.myUid()+"\n"+state+"\n配对唤醒="+matched+"；入口启动成功="+launched;
+        checkCaller();
+        String failure=lastFailure;
+        return "服务 UID="+Process.myUid()+"\n"+state+"\n配对唤醒="+matched+"；入口启动成功="+launched
+                +(failure==null ? "" : "\n上次失败："+failure);
     }
     @Override public void destroy() { checkCaller(); stopWatching(); System.exit(0); }
     private static int packageUid(String name) {

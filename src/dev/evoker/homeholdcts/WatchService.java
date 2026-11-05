@@ -27,7 +27,7 @@ public final class WatchService extends Service {
     private boolean returnToOrigin;
     private static final Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
             new ComponentName("dev.evoker.colorgptshizuku",ShellWatcher.class.getName()))
-            .daemon(true).processNameSuffix("shell_watcher").debuggable(false).version(6);
+            .daemon(true).processNameSuffix("shell_watcher").debuggable(false).version(8);
     private static final ServiceConnection statusConnection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             if (binder.pingBinder()) remote = IWakeWatcher.Stub.asInterface(binder);

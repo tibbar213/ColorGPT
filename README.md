@@ -44,4 +44,4 @@
 
 感谢 [LINUX DO 社区](https://linux.do/) 的交流与分享。
 
-0.4.5 已在一加 Ace 3 的 Shizuku Root 模式验证划掉后继续转接、重新打开后停止恢复。ADB 模式的独立监听尚未实测。
+0.4.5 已在一加 Ace 3 的 Shizuku Root 模式验证划掉后继续转接、重新打开后停止恢复。同机的 Shizuku ADB 模式（UID 2000）也验证了划掉后继续转接和停止恢复。
