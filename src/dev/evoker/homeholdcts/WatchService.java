@@ -12,6 +12,8 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import rikka.shizuku.Shizuku;
 
 public final class WatchService extends Service {
@@ -25,9 +27,26 @@ public final class WatchService extends Service {
     private boolean hotwordEnabled = true;
     private boolean bound;
     private boolean returnToOrigin;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable connectionTimeout = this::onConnectionTimeout;
+    private void onConnectionTimeout() {
+        if (!bound) return;
+        IWakeWatcher watcher = remote;
+        if (watcher != null && watcher.asBinder().pingBinder()) {
+            try {
+                latest = watcher.startWatching(returnToOrigin, powerEnabled, hotwordEnabled);
+                return;
+            } catch (Exception ignored) {
+                remote = null;
+            }
+        }
+        bound = false;
+        try { Shizuku.unbindUserService(args, connection, false); } catch (Exception ignored) {}
+        latest = "连接超时，请检查 Shizuku 后点击「开始监听」重试。";
+    }
     private static final Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
             new ComponentName("dev.evoker.colorgptshizuku",ShellWatcher.class.getName()))
-            .daemon(true).processNameSuffix("shell_watcher").debuggable(false).version(8);
+            .daemon(true).processNameSuffix("shell_watcher").debuggable(false).version(9);
     private static final ServiceConnection statusConnection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             if (binder.pingBinder()) remote = IWakeWatcher.Stub.asInterface(binder);
@@ -39,10 +58,11 @@ public final class WatchService extends Service {
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name,IBinder binder) {
             if(!bound || !binder.pingBinder()) return;
+            handler.removeCallbacks(connectionTimeout);
             remote=IWakeWatcher.Stub.asInterface(binder);
             try { latest=remote.startWatching(returnToOrigin,powerEnabled,hotwordEnabled); } catch(Exception error) { latest="连接失败："+error.getClass().getSimpleName(); }
         }
-        @Override public void onServiceDisconnected(ComponentName name) { remote=null; latest="Shizuku 监听连接已断开，请检查后重新启动。"; }
+        @Override public void onServiceDisconnected(ComponentName name) { handler.removeCallbacks(connectionTimeout); bound=false; remote=null; latest="Shizuku 监听连接已断开，请检查后重新启动。"; }
     };
     static String readStatus() {
         IWakeWatcher watcher=remote;
@@ -50,6 +70,7 @@ public final class WatchService extends Service {
             try { latest=watcher.status(); } catch(Exception ignored) { latest="监听连接不可用。"; }
             return latest;
         }
+        if(latest.startsWith("连接超时")) return latest;
         try {
             if(Shizuku.pingBinder() && Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED
                     && Shizuku.peekUserService(args,statusConnection)>=0) {
@@ -95,16 +116,23 @@ public final class WatchService extends Service {
             returnToOrigin=intent.getBooleanExtra(RETURN_TO_ORIGIN,false);
             powerEnabled=intent.getBooleanExtra(POWER_ENABLED,DEFAULT_POWER_ENABLED);
             hotwordEnabled=intent.getBooleanExtra(HOTWORD_ENABLED,true);
-            if(remote!=null) latest=remote.startWatching(returnToOrigin,powerEnabled,hotwordEnabled);
+            IWakeWatcher watcher=remote;
+            if(bound && watcher!=null && watcher.asBinder().pingBinder()) {
+                latest=watcher.startWatching(returnToOrigin,powerEnabled,hotwordEnabled);
+                return START_NOT_STICKY;
+            }
+            remote=null;
             if(!bound) {
                 bound=true;
                 latest="等待 Shizuku 监听服务连接…";
                 Shizuku.bindUserService(args,connection);
+                handler.postDelayed(connectionTimeout, 12000);
             }
         } catch(Exception error) { latest="启动失败："+error.getClass().getSimpleName(); stopSelf(); }
         return START_NOT_STICKY;
     }
     @Override public void onDestroy() {
+        handler.removeCallbacks(connectionTimeout);
         boolean wasBound=bound;
         bound=false;
         if(wasBound) {

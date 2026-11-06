@@ -56,7 +56,7 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
     }
     private void watch(DirectLogdReader stream,ExecutorService queue,int token,long since) {
         long wake=-10000,core=-10000;
-        long power=-1,assist=-1,previousAt=-1,lastPowerTransfer=-1;
+        long power=-1,assist=-1,powerCore=-1,previousAt=-1,lastPowerTransfer=-1;
         Task previous=null;
         try {
             while(active(token)) {
@@ -70,10 +70,11 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
                 if(hotwordEnabled && uid==1000 && line.contains("act=heytap.intent.action.ACTIVATE_SPEECH_ASSIST") && line.contains("cmp=com.heytap.speechassist/.core.SpeechService")) core=now;
                 long stamp=stream.getLastEntryMillis();
                 if(!powerEnabled) {
-                    power=assist=previousAt=-1;
+                    power=assist=powerCore=previousAt=-1;
                     previous=null;
                 } else if(uid==1000) {
                     if(isPowerLongPress(line) && (lastPowerTransfer<0 || stamp-lastPowerTransfer>750)) power=stamp;
+                    if(PowerDispatchMatcher.isSpeechServiceStart(uid,line)) powerCore=stamp;
                     if(line.startsWith("TaskFragmentExtImpl: shouldSetReadyFalse and resumedActivity: ActivityRecord{")
                             && line.substring(0, line.indexOf(" prev: ")<0 ? line.length() : line.indexOf(" prev: ")).contains(" u0 "+BOBO_FLOAT+" ")
                             && line.endsWith("transitionType: 1")) {
@@ -90,11 +91,13 @@ public final class ShellWatcher extends IWakeWatcher.Stub {
                             && (line.endsWith("result code=0") || line.endsWith("result code=2"))) assist=stamp;
                 }
                 boolean hotword=hotwordEnabled && wake>=0 && core>=0 && Math.abs(wake-core)<=2500;
-                boolean powerPress=powerEnabled && power>=0 && assist>=0 && Math.abs(power-assist)<=750;
+                boolean powerPress=powerEnabled && power>=0
+                        && (PowerDispatchMatcher.isPaired(power,assist)
+                        || PowerDispatchMatcher.isPaired(power,powerCore));
                 if(!hotword && !powerPress) continue;
                 Task powerOrigin=powerPress && previousAt>=0 && Math.abs(previousAt-assist)<=750 ? previous : null;
                 if(hotword) wake=core=-10000;
-                if(powerPress) { lastPowerTransfer=stamp; power=assist=previousAt=-1; previous=null; }
+                if(powerPress) { lastPowerTransfer=stamp; power=assist=powerCore=previousAt=-1; previous=null; }
                 matched++;
                 if(busy.compareAndSet(false,true)) {
                     queue.execute(() -> {
